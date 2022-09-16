@@ -1,61 +1,67 @@
+using System.Text;
 public static class ChannelService
 {
-    private static Dictionary<string, Queue<TaskCompletionSource<(string, byte[])>>> _awaitingQueues = new();
-    private static Dictionary<string, Queue<TaskCompletionSource<(string, byte[])>>> _bufferQueues = new();
+    private static Dictionary<string, List<TaskCompletionSource<(string, byte[])>>> _awaitingQueues = new();
+    private static Dictionary<string, Queue<(string, byte[])>> _bufferQueues = new();
 
-    private static Queue<TaskCompletionSource<(string, byte[])>> GetAwaitingQueue(string channelId)
+    private static List<TaskCompletionSource<(string, byte[])>> GetAwaitingQueue(string channelId)
     {
-        Queue<TaskCompletionSource<(string, byte[])>>? queue;
+        List<TaskCompletionSource<(string, byte[])>>? queue;
         lock (_awaitingQueues)
         {
             if (!_awaitingQueues.TryGetValue(channelId, out queue))
             {
-                queue = new Queue<TaskCompletionSource<(string, byte[])>>();
+                queue = new List<TaskCompletionSource<(string, byte[])>>();
                 _awaitingQueues.Add(channelId, queue);
             }
         }
         return queue;
     }
 
-    private static Queue<TaskCompletionSource<(string, byte[])>> GetBufferQueue(string channelId)
+    private static Queue<(string, byte[])> GetBufferQueue(string channelId)
     {
-        Queue<TaskCompletionSource<(string, byte[])>>? queue;
+        Queue<(string, byte[])>? queue;
         lock (_bufferQueues)
         {
             if (!_bufferQueues.TryGetValue(channelId, out queue))
             {
-                queue = new Queue<TaskCompletionSource<(string, byte[])>>();
+                queue = new ();
                 _bufferQueues.Add(channelId, queue);
             }
         }
         return queue;
     }
 
-    public static async Task<(string, byte[])> ReadData(string channelId)
+    public static async Task<(string, byte[])> ReadData(string channelId, CancellationToken cancellationToken)
     {
-        TaskCompletionSource<(string, byte[])> source = null;
-
         var bufferQueue = GetBufferQueue(channelId);
         lock (bufferQueue)
         {
             if (bufferQueue.Count > 0)
             {
-                source = bufferQueue.Dequeue();
+                return bufferQueue.Dequeue();
             }
         }
 
-        if (source != null)
-        {
-            return await source.Task;
-        }
-
-        source = new TaskCompletionSource<(string, byte[])>();
+        var source = new TaskCompletionSource<(string, byte[])>();
         var awaitingQueue = GetAwaitingQueue(channelId);
         lock (awaitingQueue)
         {
-            awaitingQueue.Enqueue(source);
+            awaitingQueue.Add(source);
         }
-        return await source.Task;
+        cancellationToken.Register(() => {
+            source.SetCanceled();
+            awaitingQueue.Remove(source);
+        });
+
+        try
+        {
+            return await source.Task;;
+        }
+        catch(Exception)
+        {
+            return ("text/plain", Encoding.UTF8.GetBytes("canceled"));
+        }
     }
 
     public static async Task WriteData(string channelId, string contentType, byte[] data)
@@ -67,7 +73,8 @@ public static class ChannelService
         {
             if (awaitingQueue.Count > 0)
             {
-                source = awaitingQueue.Dequeue();
+                source = awaitingQueue[0];
+                awaitingQueue.RemoveAt(0);
             }
         }
 
@@ -80,10 +87,7 @@ public static class ChannelService
         var bufferQueue = GetBufferQueue(channelId);
         lock (bufferQueue)
         {
-            source = new ();
-            bufferQueue.Enqueue(source);
+            bufferQueue.Enqueue((contentType, data));
         }
-
-        source.SetResult((contentType, data));
     }
 }

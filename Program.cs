@@ -19,7 +19,7 @@ app.MapGet("/channels/{channelId}", async (ctx) => {
         return;
     }
 
-    var (contentType, data) = await ChannelService.ReadData(channelId);
+    var (contentType, data) = await ChannelService.ReadData(channelId, ctx.RequestAborted);
     ctx.Response.ContentType = contentType;
     await ctx.Response.Body.WriteAsync(data, 0, data.Length);
     await ctx.Response.CompleteAsync();
@@ -36,6 +36,7 @@ app.MapPost("/channels/{channelId}", async (ctx) => {
 
     using var ms = new MemoryStream();
     await ctx.Request.Body.CopyToAsync(ms);
+    ms.Seek(0, SeekOrigin.Begin);
 
     await ChannelService.WriteData(channelId, ctx.Request.ContentType ?? "text/plain", ms.ToArray());
     ctx.Response.StatusCode = 200;
